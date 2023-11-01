@@ -3,7 +3,6 @@ import requests
 import re
 
 app = Flask(__name__)
-# Add a global variable to store the latest recognized entity name
 latest_entity_name = ""
 
 def dynamic_text_generator(user_question, scraped_text):
@@ -26,6 +25,10 @@ def extract_entities_from_payload(payload):
     parameters = payload.get("queryResult", {}).get("parameters", {})
     geo_country = parameters.get("geo-country", "")
     
+    geo_country = parameters.get("geo-country", "")
+    if isinstance(geo_country, list) and geo_country:
+        geo_country = geo_country[0]
+
     if not geo_country:
         active_contexts = extract_active_contexts(payload)
         for context in active_contexts:
@@ -33,6 +36,7 @@ def extract_entities_from_payload(payload):
                 geo_country = context['parameters']['geo-country']
                 if geo_country:
                     break
+
 
     entity_names = [name for name, value in parameters.items() if value and name != 'geo-country']
 
@@ -44,6 +48,17 @@ def extract_entities_from_payload(payload):
 
     return entity_names, geo_country
 
+def is_supported_input(data):
+    geo_country = data["queryResult"]["parameters"].get("geo-country", "")
+    if isinstance(geo_country, list) and geo_country:
+        geo_country = geo_country[0]
+    geo_country = geo_country.lower()
+
+    supported_countries = ["australia", "russia"]
+    if geo_country not in supported_countries:
+        return False, "Sorry, I currently support information only for Australia and Russia."
+    return True, ""
+
 @app.route('/webhook', methods=['POST', 'GET'])
 def webhook():
     if request.method == 'GET':
@@ -51,6 +66,10 @@ def webhook():
 
     data = request.get_json()
     api_base_url = 'https://www.gov.uk/api/content/foreign-travel-advice/{}/entry-requirements'
+
+    supported, message = is_supported_input(data)
+    if not supported:
+        return jsonify({"fulfillmentText": message})
 
     entity_names, geo_country = extract_entities_from_payload(data)
     user_question = data["queryResult"]["queryText"]
@@ -98,3 +117,4 @@ def webhook():
 
 if __name__ == '__main__':
     app.run(debug=True)
+
