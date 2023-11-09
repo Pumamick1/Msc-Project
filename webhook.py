@@ -180,10 +180,13 @@ def webhook():
 
     #Retrieve data from FCO API 
     for country in format_geo_country(geo_country):
-        api_specific_url = fco_api_base_url.format(country)
-        scraper_response = scraper(api_specific_url, entity_names)
-        fco_api_response += country + ':' + '\n ' + scraper_response + '\n' + '\n'
+        for entity in entity_names:
+            print('Entity: ', entity)
+            api_specific_url = fco_api_base_url.format(country)
+            scraper_response = scraper(api_specific_url, [entity])
+            fco_api_response += country + ':' + '\n ' + scraper_response + '\n' + '\n'
         print('7.) API specific URL: ', api_specific_url)
+
     print('8.) FCO API Response:')
     print(' ')
     print(fco_api_response)
@@ -203,5 +206,4 @@ def webhook():
 
 if __name__ == '__main__':
     app.run(debug=True)
-
 
