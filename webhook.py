@@ -1,10 +1,20 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 import requests
 import re
+from google.oauth2 import service_account
+from google.cloud import dialogflow
+import json
+from twilio.twiml.messaging_response import MessagingResponse
+from twilio.rest import Client
+import os
+from http.client import responses
+import time
 
 #Global variables 
 
-fco_api_base_url = 'https://www.gov.uk/api/content/foreign-travel-advice/{}/entry-requirements'
+access_token = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDMHOpEPbJwuGoyerxNuW7b4WsRtoH40xJ3bVfYVsxFwPWh9ojMyvQO7SAbBbzOrqdejKwFjtoP+VdmWekX0/+ruOkTwOIohCHMzSq/ZPuCvAAOI8OYmqulwTBEJy1xb2ccQf84aXASbQnTwnxrV2vMBoI5wYtMAmIA7/WOngAN+L+TNtgqZqdin4703wPd+/9GfHf97mJ4hhsjbaUxW37fVpbA3J/dxixs5NVY75VMqdqpFydIM38NrsnG/W9G9YrzU+v2XUxS6mIDKRCdJitWRRkh1OSDnbRzyCcBa0pNRIRZl5/PNbLrmWwYO5gMEKVG2nnHvK+ns9iZr7d0ZC2FAgMBAAECggEAES0hvapfeMLcFPFlJTlEjfZTN0NffpvsguZNrSPovrn1MbL4Yht2HEdyGzQJZm8mIHvAAhu6V/vIkhFg3yN08XN3EbV6kqRD3+MoBMEvtRmy+32g+ReS+DjgoeuWFGSmjac0HgApcTOBzzMfmzzZEms9zDRwT24n5yJKTL0ZDhPJHUzuvwkNW8NOmhM5VkyUW9k63rwYIDIGMNMUFN7LwVOnTNgzaEvWmhYuOR7QZHmCkHwXgE8lv8KRrbza331vr7oocdkGj+zRQufanjfxxUfTwQarON1bPFA++8mTZpBv5CrOwddnfJ2M+n8xfOoVGsMg4GBun0QaEJDBtdywhQKBgQD21GCvtxsepSTi+DOTBxqzudn0DIN+ifBI5Ee9JONF8YqXHoKxQibCcrnUCgZt+dZRHMWCdzllGctI43uJdBPIIJDfF7JvV1hdW1smz1UU/ihyLvzlOdf9r+SYRduxwCUL0ETS+sN0Zz2zIyFv+DrZeDVB8zP3zsiKm2QmJ/ifvwKBgQDTskE+gDV3hv+83Z+hme+bpf+lCpQGIRT9s6Wb7JXmwwawd4ekl9nz8AMp0WR29wOr/bx0Sj1ESn3TaD2WVrJzt8y+a/HRkOHZl3WlkJxPPkZ5U2AV9lSt6h2dHvbSnWCHaKiV7sIdpsyhys5+mOQ7RB7mECr/n/ndZYn89ifDuwKBgQCoG28aXdAnp/weZULjATSrcYnC0H8CQLoZOvitFqF/solccRg7170ENBTiGE3WuxC/P6Q5PjAl7lJoex5ZOGh8pcllWANcF5YER0MmhJEC8jLjyaLOD/5ONmyvVOzS+/V/PUKSmt1huyrnhaaxVtPl5xwGpbggL4Kf/ENSRWjsiwKBgFNIoqBrIh3HD5+G9UFHZVuvv9Z3RervYum4nmOsfQDPIzeTntqjHwz4FNaD2WlwHpKwfU6m0lmmkL/2F5youQYLflI/91/CBwhqrM8ZCFWoo2Mh6QBa68+L9mCVCPetEIfVJdXum5G8yG6ycfCeR9QFJb7PB4uPrWZrhxDs6pH3AoGAbIg5tGcBKbZ741giHYc1/51qLrYF5hlAFsldiqU6nc9w/X4FA6l3Nw0MZAbSRSb3BNLvYrjJmQjuSvSuwH+Sdd"
+advisories_url = 'https://www.gov.uk/api/content/foreign-travel-advice/{}'
+fco_api_base_url = 'https://www.gov.uk/api/content/foreign-travel-advice/{}/{}'
 fco_api_response = ' '
 entity_names = []
 previous_message_entity = ' '
@@ -14,13 +24,42 @@ geo_country_from_prior_question = ' '
 supported_countries = ['Australia', 'Russia']
 message_count = 0
 user_question = ' '
-user_response = ' '
+user_response = 'Test'
 message_count = 0
+
+os.environ['TWILIO_ACCOUNT_SID'] = 'AC0a931cb7c2d4af86bcb5b0eb730f1c64'
+os.environ['TWILIO_AUTH_TOKEN'] = 'f9d9a0748581a84c57fd611c38dbdeca'
 
 app = Flask(__name__)
 latest_entity_name = ""
 
 
+def detect_intent_texts(project_id, session_id, texts, language_code):
+    """Returns the result of detect intent with texts as inputs.
+
+    Using the same `session_id` between requests allows continuation
+    of the conversation."""
+
+    session_client = dialogflow.SessionsClient()
+
+    session = session_client.session_path(project_id, session_id)
+    print("Session path: {}\n".format(session))
+
+   
+    text_input = dialogflow.TextInput(text=texts, language_code=language_code)
+
+    query_input = dialogflow.QueryInput(text=text_input)
+
+    response = session_client.detect_intent(
+        request={"session": session, "query_input": query_input}
+    )
+
+    #print('TYPE!!!!!', type(response))        
+    #print("Detected intent: ", response.query_result.intent.display_name)
+    #print("Detected country: ", response.query_result.parameters)
+    
+    return response
+        
 
 
 def format_geo_country(geo_country):
@@ -59,7 +98,7 @@ def dynamic_text_generator(user_question, scraped_text):
     if response.status_code != 200:
         print(response.status_code)
         return "Sorry, I couldn't fetch the required information."
-    return f"Based on our research, {response.json().get('output')}"
+    return f"{response.json().get('output')}"
 
 # Webscrape function
 def scraper(api_specific_url, entity_names): 
@@ -76,7 +115,8 @@ def scraper(api_specific_url, entity_names):
                 html_content = item.get('body', '')
                 break
 
-        if not entity_names:  # if no entity was detected in follow-up
+        if not entity_names:  
+            #print("there are no entities in this list")
             clean_content = re.sub('<[^>]+>', '', html_content)  # clean the entire content
             user_response = dynamic_text_generator(user_question, clean_content)
         else:
@@ -93,7 +133,7 @@ def scraper(api_specific_url, entity_names):
                         end_pos = len(html_content)
                     section_content = html_content[start_pos:end_pos].strip()
                     clean_content = re.sub('<[^>]+>', '', section_content)
-                    print(clean_content)
+                    #print(clean_content)
                     break
                 
 
@@ -179,30 +219,78 @@ def webhook():
                     print(f"6.) Entity {param_value} in follow-up entity does NOT match entities in initial question")
 
     #Retrieve data from FCO API 
-    for country in format_geo_country(geo_country):
-        for entity in entity_names:
-            print('Entity: ', entity)
-            api_specific_url = fco_api_base_url.format(country)
-            scraper_response = scraper(api_specific_url, [entity])
-            fco_api_response += country + ':' + '\n ' + scraper_response + '\n' + '\n'
-        print('7.) API specific URL: ', api_specific_url)
 
-    print('8.) FCO API Response:')
-    print(' ')
-    print(fco_api_response)
+    if intent_name == 'travel-advisories':
+        for country in format_geo_country(geo_country):
+            #print(advisories_url)
+            #print(geo_country, type(geo_country))
+           #print(advisories_url.format(geo_country))
+            api_specific_url = advisories_url.format(geo_country.lower())
+
+            response_API = requests.get(api_specific_url)
+            response_API.raise_for_status()
+            fco_api_response = response_API.json()
+            
+    else:
+
+        for country in format_geo_country(geo_country):
+            for entity in entity_names:
+                #print('Entity: ', entity)
+                api_specific_url = fco_api_base_url.format(country, intent_name)
+                scraper_response = scraper(api_specific_url, [entity])
+                fco_api_response += country + ':' + '\n ' + scraper_response + '\n' + '\n'
+
+    #print('7.) API specific URL: ', api_specific_url)
+    #print('8.) FCO API Response:')
+    #print(' ')
+    #print(fco_api_response)
 
     #Send user question and FCO API response to DeepAI 
 
     user_response += dynamic_text_generator(user_question, fco_api_response)
-    print('9.) Webhook Response: ')
-    print(' ')
-    print(user_response)
+    #print('9.) Webhook Response: ')
+    #print(' ')
+    #print(user_response)
 
     geo_country_from_prior_question = geo_country
 
+    print("7.) Response to user: ", user_response)
+    
     return jsonify({
         "fulfillmentText": user_response
-        })
+       })     
+
+@app.route('/whatsapp', methods =['GET', 'POST'])
+def whatsapp():
+
+    project_id = 'consularassistanceagent-yxuj'
+    session_id = 'test'
+    language_code = "en-US"
+    incoming_message = request.form.get('Body', '')
+
+    intent = detect_intent_texts(project_id, session_id, incoming_message, language_code)
+    time.sleep(1)
+
+    account_sid = os.environ['TWILIO_ACCOUNT_SID']
+    auth_token = os.environ['TWILIO_AUTH_TOKEN']
+    client = Client(account_sid, auth_token)
+    test = 'test'
+
+   # response = client.messages \
+            #    .create(
+             #        from_='whatsapp:+14155238886',
+              #       body='Your appointment is coming up on July 21 at 3PM',
+               #      to='whatsapp:+447749179246'
+                # )
+
+    response = MessagingResponse()
+    print("8.) WhatsApp response: ", response)
+    response.message(user_response)
+    print("9.) Formatted WhatsApp response: ", response)
+    return Response(str(response), mimetype="application/xml")
+
+    
+
 
 if __name__ == '__main__':
     app.run(debug=True)
