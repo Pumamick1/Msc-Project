@@ -9,6 +9,8 @@ from twilio.rest import Client
 import os
 from http.client import responses
 import time
+import timeit
+from functions import scraper, dynamic_text_generator, detect_intent_texts, format_geo_country, extract_entities_from_payload
 
 #Global variables 
 
@@ -16,6 +18,7 @@ access_token = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDMHOpEPbJwuGoy
 advisories_url = 'https://www.gov.uk/api/content/foreign-travel-advice/{}'
 fco_api_base_url = 'https://www.gov.uk/api/content/foreign-travel-advice/{}/{}'
 fco_api_response = ' '
+prior_intent_name = ' '
 entity_names = []
 previous_message_entity = ' '
 geo_country = None 
@@ -33,128 +36,12 @@ os.environ['TWILIO_AUTH_TOKEN'] = 'f9d9a0748581a84c57fd611c38dbdeca'
 app = Flask(__name__)
 latest_entity_name = ""
 
-
-def detect_intent_texts(project_id, session_id, texts, language_code):
-    """Returns the result of detect intent with texts as inputs.
-
-    Using the same `session_id` between requests allows continuation
-    of the conversation."""
-
-    session_client = dialogflow.SessionsClient()
-
-    session = session_client.session_path(project_id, session_id)
-    print("Session path: {}\n".format(session))
-
-   
-    text_input = dialogflow.TextInput(text=texts, language_code=language_code)
-
-    query_input = dialogflow.QueryInput(text=text_input)
-
-    response = session_client.detect_intent(
-        request={"session": session, "query_input": query_input}
-    )
-
-    #print('TYPE!!!!!', type(response))        
-    #print("Detected intent: ", response.query_result.intent.display_name)
-    #print("Detected country: ", response.query_result.parameters)
-    
-    return response
-        
-
-
-def format_geo_country(geo_country):
-    
-    if isinstance(geo_country, list):
-        
-        return [country.lower() for country in geo_country]
-    else:
-        
-        return [geo_country.lower()]
-
-def extract_entities_from_payload(payload):
-    global latest_entity_name
-
-    parameters = payload.get("queryResult", {}).get("parameters", {})
-    geo_country = parameters.get("geo-country", [])
-
-    entity_names = [name for name, value in parameters.items() if value and name != 'geo-country']
-
-    if not entity_names and latest_entity_name:
-        entity_names = [latest_entity_name]
-    elif entity_names:
-        latest_entity_name = entity_names[0]
-
-    return entity_names, geo_country
-
-
-#Dynamically produce user response
-def dynamic_text_generator(user_question, scraped_text):
-    input_to_deepai = f"Provide a detailed answer to this question, from the perspective of British citizens: '{user_question}'. Base your answer on this information: '{scraped_text}'."
-    response = requests.post(
-        "https://api.deepai.org/api/text-generator",
-        data={'text': input_to_deepai},
-        headers={'api-key': '7feaf274-c450-40a1-8f90-552928bd1cd0'}  # Replace with your actual API key
-    )
-    if response.status_code != 200:
-        print(response.status_code)
-        return "Sorry, I couldn't fetch the required information."
-    return f"{response.json().get('output')}"
-
-# Webscrape function
-def scraper(api_specific_url, entity_names): 
-
-    
-    try:
-        response_API = requests.get(api_specific_url)
-        response_API.raise_for_status()
-        data = response_API.json()
-
-        html_content = ''
-        for item in data.get("details", {}).get("parts", []):
-            if item.get('slug') == 'entry-requirements':
-                html_content = item.get('body', '')
-                break
-
-        if not entity_names:  
-            #print("there are no entities in this list")
-            clean_content = re.sub('<[^>]+>', '', html_content)  # clean the entire content
-            user_response = dynamic_text_generator(user_question, clean_content)
-        else:
-            tags_to_search = ['h2', 'h3']
-            clean_content = "Section not found"
-            for tag in tags_to_search:
-                start_keyword = f'<{tag} id="{entity_names[0]}">'
-                end_keyword = f'<{tag}'
-                start_pos = html_content.find(start_keyword)
-
-                if start_pos != -1:
-                    end_pos = html_content.find(end_keyword, start_pos + len(start_keyword))
-                    if end_pos == -1:
-                        end_pos = len(html_content)
-                    section_content = html_content[start_pos:end_pos].strip()
-                    clean_content = re.sub('<[^>]+>', '', section_content)
-                    #print(clean_content)
-                    break
                 
-
-    except requests.RequestException as e:
-        print(e)
-        user_response = "Sorry, I couldn't fetch the required information."
-    return clean_content
-                
-
-    
-
-
-# Note: You would call this function from within your Flask route handler and handle the response accordingly.
-
-
-# The rest of your code...
-
-
 #Main code for webhook
 @app.route('/webhook', methods = ['POST', 'GET'])
 def webhook():
+
+    print("Webhook triggered")
 
     #Global variables 
     global fco_api_base_url 
@@ -169,21 +56,19 @@ def webhook():
     global user_question
     global user_response
     global message_count
+    global prior_intent_name
 
     user_response = ' '
 
-    #Retrieve data from Dialogflow payload 
-
+    #Retrieve data from Dialogflow payload and parse intent name, entitiy name and geo country
     dialogflow_data = request.get_json()
-
-    # Retrieve intent name and parameters from dialogflow payload 
     intent_name = dialogflow_data['queryResult']['intent']['displayName']
     parameters = {key: value for key, value in dialogflow_data['queryResult']['parameters'].items() if value}
     entity_names, geo_country = extract_entities_from_payload(dialogflow_data)
+
     print('Test Details: ')
     print(' ')
     print('1.) Intent Name: ', intent_name)
-    print('2.) Parameters: ', parameters)
     
     #Check if this is first message sent by user 
     if message_count == 0: 
@@ -192,31 +77,31 @@ def webhook():
         user_response = ' '
 
     message_count += 1
-    print('3.) Total messages: ', message_count)
 
     #Extract user question from payload
     user_question = dialogflow_data['queryResult']['queryText']
-    print('4.) User Question: ', user_question)
+   # print('4.) User Question: ', user_question)
 
     #Construct API URL for initial and non-follow up questions 
     if intent_name != 'follow-up': 
-        print("5.) Country: ", geo_country, "Country from prior question ", geo_country_from_prior_question )
-        print('6.) Entity names:', entity_names)
+        print('2.) Entities:', entity_names)
+        print("3.) Geo-country: ", geo_country)
+        
 
     #Construct API URL for follow-up questions
     if intent_name == 'follow-up': 
         if not geo_country:
             geo_country = geo_country_from_prior_question
             print('5.) No new geo-country. Using country from before instead:', geo_country)
-        else: 
-            print('5.) Geo-country: ', geo_country)
-
+        
         for param_name, param_value in parameters.items():
                 if param_name in entity_names and param_name != 'geo-country' and param_value != ' ': 
                     print(f"6.) Entity {param_name} in follow-up question matches entity in initial question")
                 if param_name not in entity_names and param_name != 'geo-country' and param_value != ' ':
                     entity_names.append(param_name)
                     print(f"6.) Entity {param_value} in follow-up entity does NOT match entities in initial question")
+
+        api_specific_url = fco_api_base_url.format(geo_country, prior_intent_name)
 
     #Retrieve data from FCO API 
 
@@ -231,30 +116,23 @@ def webhook():
             response_API.raise_for_status()
             fco_api_response = response_API.json()
             
-    else:
+    elif intent_name != 'follow-up':
+
+        prior_intent_name = intent_name
 
         for country in format_geo_country(geo_country):
             for entity in entity_names:
                 #print('Entity: ', entity)
                 api_specific_url = fco_api_base_url.format(country, intent_name)
-                scraper_response = scraper(api_specific_url, [entity])
+                scraper_response = scraper(api_specific_url, [entity], user_question)
                 fco_api_response += country + ':' + '\n ' + scraper_response + '\n' + '\n'
 
-    #print('7.) API specific URL: ', api_specific_url)
-    #print('8.) FCO API Response:')
-    #print(' ')
-    #print(fco_api_response)
-
     #Send user question and FCO API response to DeepAI 
-
-    user_response += dynamic_text_generator(user_question, fco_api_response)
-    #print('9.) Webhook Response: ')
-    #print(' ')
-    #print(user_response)
-
+   # print("FCO API RESPONSE: ", fco_api_response)
+    print("4.) URL: ", api_specific_url)
+    print("hi!")
+    user_response = dynamic_text_generator(user_question, fco_api_response)
     geo_country_from_prior_question = geo_country
-
-    print("7.) Response to user: ", user_response)
     
     return jsonify({
         "fulfillmentText": user_response
@@ -263,35 +141,31 @@ def webhook():
 @app.route('/whatsapp', methods =['GET', 'POST'])
 def whatsapp():
 
+    start_time = time.time()
     project_id = 'consularassistanceagent-yxuj'
     session_id = 'test'
     language_code = "en-US"
     incoming_message = request.form.get('Body', '')
 
     intent = detect_intent_texts(project_id, session_id, incoming_message, language_code)
-    time.sleep(1)
+    time.sleep(6)
 
-    account_sid = os.environ['TWILIO_ACCOUNT_SID']
-    auth_token = os.environ['TWILIO_AUTH_TOKEN']
-    client = Client(account_sid, auth_token)
-    test = 'test'
-
-   # response = client.messages \
-            #    .create(
-             #        from_='whatsapp:+14155238886',
-              #       body='Your appointment is coming up on July 21 at 3PM',
-               #      to='whatsapp:+447749179246'
-                # )
+    #account_sid = os.environ['TWILIO_ACCOUNT_SID'] DELETE
+    #auth_token = os.environ['TWILIO_AUTH_TOKEN'] DELETE
+    #client = Client(account_sid, auth_token) DELETE
+    #test = 'test' DELETE
 
     response = MessagingResponse()
-    print("8.) WhatsApp response: ", response)
     response.message(user_response)
-    print("9.) Formatted WhatsApp response: ", response)
+    end_time = time.time()
+    runtime = end_time - start_time
+   # print("6.) Runtime: ", runtime)
+    print("7.) User Response: ", user_response)
     return Response(str(response), mimetype="application/xml")
 
     
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=False)
 
